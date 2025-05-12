@@ -7,7 +7,40 @@ from Bio import PDB
 from Bio.PDB.PDBIO import PDBIO
 from Bio.PDB import Atom, Residue, Chain, Model, Structure
 from Bio.PDB.vectors import Vector
+import sys
+import os
+import shutil
+import subprocess
+from IPython.display import clear_output
 
+def ClearFolder(inputFolder):
+  for filename in os.listdir(inputFolder):
+      file_path = os.path.join(inputFolder, filename)
+      try:
+          if os.path.isfile(file_path) or os.path.islink(file_path):
+              os.unlink(file_path)
+          elif os.path.isdir(file_path):
+              shutil.rmtree(file_path)
+      except Exception as e:
+          print('Failed to delete %s. Reason: %s' % (file_path, e))
+
+def load_fasta(file_path):
+    sequences = []
+    with open(file_path, 'r') as file:
+        while True:
+            comment = file.readline().strip()
+            if not comment:
+                break
+            sequence = file.readline().strip()
+            if 'overall_confidence' in comment:
+                #comment format -> ">working_04, id=1, T=0.044000000000000004, seed=37763, overall_confidence=0.2417, ligand_confidence=0.2186, seq_rec=0.2693"
+                comment = 'file=' + comment[1:]
+                json_data = {key: (value).strip() for key, value in [item.split('=') for item in comment.split(', ')]}
+                json_data['overall_confidence']= float(json_data['overall_confidence'])
+                json_data['ligand_confidence']= float(json_data['ligand_confidence'])
+                json_data['seq_rec']= float(json_data['seq_rec'])
+                sequences.append((json_data , sequence))
+    return sequences 
 
 class PolyGLinker:
 
@@ -600,3 +633,90 @@ def PDBViewer(oldmodel):
     view.zoomTo()
     view.setBackgroundColor("white")
     return view.show()
+
+
+def CreateSequence(file, sequenceFile,addSaltBridges=False, numberAttempts=1, batch_size=1, number_batches=1):
+
+    os.makedirs("./outputs/default/backbones", exist_ok=True)
+    os.makedirs("./outputs/default/seqs", exist_ok=True)
+    os.makedirs("./inputs", exist_ok=True)
+
+    ClearFolder('/content/outputs/default/backbones')
+    ClearFolder('/content/outputs/default/seqs')
+
+
+    
+    print(f"Loaded {file}")
+    cc=0  
+    for seed in range(numberAttempts):
+        
+        attemptFile = f'./inputs/{ os.path.splitext(os.path.basename(file))[0]}_{cc}.pdb'
+        shutil.copy(file, attemptFile)
+        temp = np.random.randint(100)/100.0 * .1
+        print(f"Running seed {seed+1} with temp {temp}")
+        sseed=np.random.randint(100000)+seed
+
+        if addSaltBridges:
+            change =  np.random.randint(40)/10.0
+            bias = f"A:{change/1.5:.2f},T:{change:.2f},R:{change:.2f},E:{change:.2f},Y:{change/2:.2f},G:{-1*change:.2f},S:{-1*change:.2f},K:{-1*change:.2f},D:{-1*change:.2f}"
+            command = [
+                "python", "./LigandMPNN/run.py",
+                "--verbose", "0",
+                "--model_type", "ligand_mpnn",
+                "--checkpoint_ligand_mpnn", "./LigandMPNN/model_params/ligandmpnn_v_32_030_25.pt",
+                "--temperature", str(temp),
+                "--seed", str(sseed + 1),
+                "--pdb_path", attemptFile,
+                "--out_folder", "./outputs/default",
+                "--batch_size", str(batch_size),
+                "--number_of_batches", str(number_batches),
+                "--bias_AA", bias
+            ]
+            subprocess.run(command, check=True)
+        else:
+            command = [
+                "python", "./LigandMPNN/run.py",
+                "--verbose", "0",
+                "--model_type", "ligand_mpnn",
+                "--checkpoint_ligand_mpnn", "./LigandMPNN/model_params/ligandmpnn_v_32_030_25.pt",
+                "--temperature", str(temp),
+                "--seed", str(sseed + 1),
+                "--pdb_path", attemptFile,
+                "--out_folder", "./outputs/default",
+                "--batch_size", str(batch_size),
+                "--number_of_batches", str(number_batches)
+            ]
+            subprocess.run(command, check=True)
+
+        clear_output()
+        file =(f'/content/outputs/default/seqs/{os.path.splitext(os.path.basename(attemptFile))[0]}.fa')
+        generated_sequences = []
+        
+        sequences = load_fasta(file)
+        generated_sequences.extend(sequences)
+        # Sort sequences by 'overall_confidence' in json_data and select the top value
+        sorted_sequences = sorted(generated_sequences, key=lambda x: x[0]['overall_confidence'], reverse=True)
+        # Print out the top 15 sequences with their overall confidence
+        for i, (json_data, sequence) in enumerate(sorted_sequences[:7]):
+            print(f"Sequence {i+1}:")
+            print(f"Overall Confidence: {json_data['overall_confidence']} {json_data['ligand_confidence']} {json_data['seq_rec']}")
+            print(f"Source File: {json_data['file']}")
+            parts= sequence.split(':')
+            for part in parts:
+                print(part) 
+        print()
+        print('Sorted by ligand confidence')
+        print()
+        sorted_sequences = sorted(generated_sequences, key=lambda x: x[0]['ligand_confidence'], reverse=True)
+        for i, (json_data, sequence) in enumerate(sorted_sequences[:7]):
+            print(f"Sequence {i+1}  Overall Confidence: {json_data['overall_confidence']} {json_data['ligand_confidence']} {json_data['seq_rec']}")
+            parts= sequence.split(':')
+            for part in parts:
+                print(part)    
+
+        print(f"outputFile: {sequenceFile}")
+        with open(file, "r") as infile, open(sequenceFile, "a") as outfile:
+            outfile.write(infile.read())
+        print (f"Finished seed {cc} : {seed+1} with temp {temp}")
+        
+        cc+=1    
