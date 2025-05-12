@@ -635,7 +635,7 @@ def PDBViewer(oldmodel):
     return view.show()
 
 
-def CreateSequence(file, sequenceFile,addSaltBridges=False, numberAttempts=1, batch_size=1, number_batches=1):
+def CreateSequence(pdbFile, sequenceFile,addSaltBridges=False, numberAttempts=1, batch_size=1, number_batches=1):
 
     os.makedirs("./outputs/default/backbones", exist_ok=True)
     os.makedirs("./outputs/default/seqs", exist_ok=True)
@@ -646,12 +646,12 @@ def CreateSequence(file, sequenceFile,addSaltBridges=False, numberAttempts=1, ba
 
 
     
-    print(f"Loaded {file}")
+    print(f"Loading {pdbFile}")
     cc=0  
     for seed in range(numberAttempts):
         
-        attemptFile = f'./inputs/{ os.path.splitext(os.path.basename(file))[0]}_{cc}.pdb'
-        shutil.copy(file, attemptFile)
+        attemptFile = f'./inputs/{ os.path.splitext(os.path.basename(pdbFile))[0]}_{cc}.pdb'
+        shutil.copy(pdbFile, attemptFile)
         temp = np.random.randint(100)/100.0 * .1
         print(f"Running seed {seed+1} with temp {temp}")
         sseed=np.random.randint(100000)+seed
@@ -720,3 +720,4 @@ def CreateSequence(file, sequenceFile,addSaltBridges=False, numberAttempts=1, ba
         print (f"Finished seed {cc} : {seed+1} with temp {temp}")
         
         cc+=1    
+    return sorted_sequences
