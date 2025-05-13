@@ -703,8 +703,7 @@ def MoveChainSection(pdb_file, chain_id, residue_range, direction, distance):
                 atom.coord += correction
 
     return structure
-
-def CreateSequence(pdbFile, sequenceFile,addSaltBridges=False, numberAttempts=1, batch_size=1, number_batches=1):
+def CreateSequence(pdbFile, sequenceFile,generated_sequences = [],addSaltBridges=False, numberAttempts=1, batch_size=1, number_batches=1):
 
     os.makedirs("./outputs/default/backbones", exist_ok=True)
     os.makedirs("./outputs/default/seqs", exist_ok=True)
@@ -712,8 +711,6 @@ def CreateSequence(pdbFile, sequenceFile,addSaltBridges=False, numberAttempts=1,
 
     ClearFolder('/content/outputs/default/backbones')
     ClearFolder('/content/outputs/default/seqs')
-
-
     
     print(f"Loading {pdbFile}")
     cc=0  
@@ -759,7 +756,6 @@ def CreateSequence(pdbFile, sequenceFile,addSaltBridges=False, numberAttempts=1,
 
         clear_output()
         file =(f'/content/outputs/default/seqs/{os.path.splitext(os.path.basename(attemptFile))[0]}.fa')
-        generated_sequences = []
         
         sequences = load_fasta(file)
         generated_sequences.extend(sequences)
