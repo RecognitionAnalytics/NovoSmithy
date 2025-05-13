@@ -11,6 +11,7 @@ import sys
 import os
 import shutil
 import subprocess
+from scipy.spatial.transform import Rotation
 from IPython.display import clear_output
 
 def ClearFolder(inputFolder):
@@ -635,6 +636,74 @@ def PDBViewer(oldmodel):
     return view.show()
 
 
+def MoveChainSection(pdb_file, chain_id, residue_range, direction, distance):
+    """
+    Move a section of a chain in a PDB file and adjust surrounding residues to maintain CA-CA distances.
+
+    Args:
+        pdb_file (str): Path to the input PDB file.
+        chain_id (str): Chain ID of the chain to modify.
+        residue_range (tuple): Range of residues to move (start_residue, end_residue).
+        direction (np.array): Direction vector for the movement.
+        distance (float): Distance to move the section.
+
+    Returns:
+        Structure.Structure: Modified structure with the moved chain section.
+    """
+    # Load the PDB structure
+    structure = PDBLoader(pdb_file)
+    chain = structure[0][chain_id]
+
+    # Normalize the direction vector
+    direction = direction / np.linalg.norm(direction)
+
+    # Identify residues to move
+    start_res, end_res = residue_range
+    residues_to_move = [
+        res for res in chain.get_residues() if start_res <= res.id[1] <= end_res
+    ]
+
+    # Move the specified residues
+    for residue in residues_to_move:
+        for atom in residue:
+            atom.coord += direction * distance
+
+    # Adjust surrounding residues to maintain CA-CA distances
+    ca_ca_distance = 3.8  # Standard CA-CA distance in Å
+    all_residues = list(chain.get_residues())
+    start_idx = all_residues.index(residues_to_move[0])
+    end_idx = all_residues.index(residues_to_move[-1])
+
+    # Pull residues before the range
+    for i in range(start_idx - 1, -1, -1):
+        current_res = all_residues[i]
+        next_res = all_residues[i + 1]
+        if "CA" in current_res and "CA" in next_res:
+            ca_current = current_res["CA"].get_coord()
+            ca_next = next_res["CA"].get_coord()
+            displacement = ca_next - ca_current
+            correction = (np.linalg.norm(displacement) - ca_ca_distance) * (
+                displacement / np.linalg.norm(displacement)
+            )
+            for atom in current_res:
+                atom.coord += correction
+
+    # Pull residues after the range
+    for i in range(end_idx + 1, len(all_residues)):
+        current_res = all_residues[i]
+        prev_res = all_residues[i - 1]
+        if "CA" in current_res and "CA" in prev_res:
+            ca_current = current_res["CA"].get_coord()
+            ca_prev = prev_res["CA"].get_coord()
+            displacement = ca_prev - ca_current
+            correction = (np.linalg.norm(displacement) - ca_ca_distance) * (
+                displacement / np.linalg.norm(displacement)
+            )
+            for atom in current_res:
+                atom.coord += correction
+
+    return structure
+
 def CreateSequence(pdbFile, sequenceFile,addSaltBridges=False, numberAttempts=1, batch_size=1, number_batches=1):
 
     os.makedirs("./outputs/default/backbones", exist_ok=True)
@@ -721,3 +790,195 @@ def CreateSequence(pdbFile, sequenceFile,addSaltBridges=False, numberAttempts=1,
         
         cc+=1    
     return sorted_sequences
+
+
+
+def RotateChainSection(model, chain_id, residue_range, rotation_angles, axis=None):
+    """
+    Rotate a section of a chain around its center of mass and adjust surrounding residues.
+    
+    Args:
+        model: First model of the PDB file
+        chain_id (str): Chain ID of the chain to modify
+        residue_range (tuple): Range of residues to rotate (start_residue, end_residue)
+        rotation_angles (tuple or float): Rotation angles in degrees (x, y, z) or single angle if axis is provided
+        axis (np.array, optional): Custom rotation axis. If None, uses x, y, z rotation sequence.
+    
+    Returns:
+        Structure.Structure: Modified structure with the rotated chain section
+    """
+     
+    # Load the chain
+    chain = model[chain_id]
+    
+    # Identify residues to rotate
+    if residue_range==None:
+        # If no residue range is provided, move the entire chain
+        residues_to_rotate = list(chain.get_residues())
+        start_res = residues_to_rotate[0].id[1]
+        end_res = residues_to_rotate[-1].id[1]
+    else:
+        start_res, end_res = residue_range
+        residues_to_rotate = [
+            res for res in chain.get_residues() if start_res <= res.id[1] <= end_res
+        ]
+    
+    # Calculate center of mass of the selected section
+    com = np.zeros(3)
+    atom_count = 0
+    for res in residues_to_rotate:
+        for atom in res:
+            com += atom.coord
+            atom_count += 1
+    
+    if atom_count > 0:
+        com = com / atom_count
+    
+    # Create rotation matrix
+    if axis is not None:
+        # Single axis rotation
+        axis = np.array(axis) / np.linalg.norm(axis)
+        angle_rad = np.radians(rotation_angles)
+        r = Rotation.from_rotvec(angle_rad * axis)
+        rotation_matrix = r.as_matrix()
+    else:
+        # Sequential x, y, z rotations
+        angles = rotation_angles if isinstance(rotation_angles, tuple) else (rotation_angles, 0, 0)
+        r = Rotation.from_euler('xyz', angles, degrees=True)
+        rotation_matrix = r.as_matrix()
+    
+    # Apply rotation to selected residues
+    for res in residues_to_rotate:
+        for atom in res:
+            # Move to origin, rotate, then move back
+            atom.coord = atom.coord - com
+            atom.coord = np.dot(rotation_matrix, atom.coord)
+            atom.coord = atom.coord + com
+    
+    # Adjust surrounding residues to maintain CA-CA distances
+    ca_ca_distance = 3.8  # Standard CA-CA distance in Å
+    all_residues = list(chain.get_residues())
+    start_idx = all_residues.index(residues_to_rotate[0])
+    end_idx = all_residues.index(residues_to_rotate[-1])
+    
+    # Pull residues before the range
+    for i in range(start_idx - 1, -1, -1):
+        current_res = all_residues[i]
+        next_res = all_residues[i + 1]
+        if "CA" in current_res and "CA" in next_res:
+            ca_current = current_res["CA"].get_coord()
+            ca_next = next_res["CA"].get_coord()
+            displacement = ca_next - ca_current
+            correction = (np.linalg.norm(displacement) - ca_ca_distance) * (
+                displacement / np.linalg.norm(displacement)
+            )
+            
+            # If the distance is close enough, break the loop
+            if (np.linalg.norm(correction)/ca_ca_distance) < 0.01:
+                break
+            
+            for atom in current_res:
+                atom.coord += correction
+    
+    # Pull residues after the range
+    for i in range(end_idx + 1, len(all_residues)):
+        current_res = all_residues[i]
+        prev_res = all_residues[i - 1]
+        if "CA" in current_res and "CA" in prev_res:
+            ca_current = current_res["CA"].get_coord()
+            ca_prev = prev_res["CA"].get_coord()
+            displacement = ca_prev - ca_current
+            correction = (np.linalg.norm(displacement) - ca_ca_distance) * (
+                displacement / np.linalg.norm(displacement)
+            )
+            
+            # If the distance is close enough, break the loop
+            if (np.linalg.norm(correction)/ca_ca_distance) < 0.01:
+                break
+                
+            for atom in current_res:
+                atom.coord += correction
+    
+    return model
+
+def MoveChainSection(model, chain_id, residue_range, direction, distance):
+    """
+    Move a section of a chain in a PDB file and adjust surrounding residues to maintain CA-CA distances.
+
+    Args:
+        model : first model of the PDB file.
+        chain_id (str): Chain ID of the chain to modify.
+        residue_range (tuple): Range of residues to move (start_residue, end_residue).
+        direction (np.array): Direction vector for the movement.
+        distance (float): Distance to move the section.
+
+    Returns:
+        Structure.Structure: Modified structure with the moved chain section.
+    """
+    # Load the chain
+    chain = model[chain_id]
+
+    # Normalize the direction vector
+    direction = direction / np.linalg.norm(direction)
+
+    # Identify residues to move
+    
+    if residue_range==None:
+        # If no residue range is provided, move the entire chain
+        residues_to_move = list(chain.get_residues())
+        start_res = residues_to_move[0].id[1]
+        end_res = residues_to_move[-1].id[1]
+    else:
+        start_res, end_res = residue_range
+        residues_to_move = [
+            res for res in chain.get_residues() if start_res <= res.id[1] <= end_res
+        ]
+
+    # Move the specified residues
+    for residue in residues_to_move:
+        for atom in residue:
+            atom.coord += direction * distance
+
+    # Adjust surrounding residues to maintain CA-CA distances
+    ca_ca_distance = 3.8  # Standard CA-CA distance in Å
+    all_residues = list(chain.get_residues())
+    start_idx = all_residues.index(residues_to_move[0])
+    end_idx = all_residues.index(residues_to_move[-1])
+
+    # Pull residues before the range
+    for i in range(start_idx - 1, -1, -1):
+        current_res = all_residues[i]
+        next_res = all_residues[i + 1]
+        if "CA" in current_res and "CA" in next_res:
+            ca_current = current_res["CA"].get_coord()
+            ca_next = next_res["CA"].get_coord()
+            displacement = ca_next - ca_current
+            correction = (np.linalg.norm(displacement) - ca_ca_distance) * (
+                displacement / np.linalg.norm(displacement)
+            )
+            
+            #if the distance is small enough, break the loop
+            if ( np.linalg.norm( correction)/ca_ca_distance)< .01:
+                break
+            
+            for atom in current_res:
+                atom.coord += correction
+
+    # Pull residues after the range
+    for i in range(end_idx + 1, len(all_residues)):
+        current_res = all_residues[i]
+        prev_res = all_residues[i - 1]
+        if "CA" in current_res and "CA" in prev_res:
+            ca_current = current_res["CA"].get_coord()
+            ca_prev = prev_res["CA"].get_coord()
+            displacement = ca_prev - ca_current
+            correction = (np.linalg.norm(displacement) - ca_ca_distance) * (
+                displacement / np.linalg.norm(displacement)
+            )
+            #if the distance is small enough, break the loop
+            if ( np.linalg.norm( correction)/ca_ca_distance)< .01:
+                break
+            for atom in current_res:
+                atom.coord += correction
+
+    return model
